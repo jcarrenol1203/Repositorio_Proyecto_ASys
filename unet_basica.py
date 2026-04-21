@@ -114,6 +114,33 @@ class BasicUNet(nn.Module):
 # =====================================================================
 # 3. ENTRENAMIENTO
 # =====================================================================
+
+# Implementación explícita de la Función de Pérdida del Artículo (Ecuación 12)
+# Mean Square Error (MSE)
+class ArticleMSELoss(nn.Module):
+    def __init__(self):
+        super(ArticleMSELoss, self).__init__()
+        
+    def forward(self, D_theta_x_o, x_t):
+        """
+        Calcula matemáticamente: L(θ) = (1 / N) * Σ || x_t - D_θ(x_o) ||^2_2
+        
+        Donde:
+        - D_theta_x_o : Salida de la red U-Net (predicción desde imagen observada con ruido)
+        - x_t         : Ground truth (imagen real/máscara objetivo)
+        - N           : Número total de imágenes
+        """
+        # 1. Calculamos la diferencia entre la verdad absoluta y la predicción: (x_t - D_θ(x_o))
+        diff = x_t - D_theta_x_o
+        
+        # 2. Elevamos al cuadrado para calcular la norma L2 al cuadrado: || ... ||^2_2
+        squared_diff = torch.pow(diff, 2)
+        
+        # 3. Sumamos y dividimos por N (Promedio / Mean): (1 / N) * Σ ...
+        L_theta = torch.mean(squared_diff)
+        
+        return L_theta
+
 def train_model():
     print("Preparando datos...")
     # Creamos el dataset y el DataLoader (este último hace los "lotes" o batches)
@@ -123,8 +150,8 @@ def train_model():
     print("Inicializando modelo U-Net...")
     model = BasicUNet()
     
-    # Función de pérdida (Binary Cross Entropy) compara píxel por píxel si es 0 o 1
-    criterion = nn.BCELoss() 
+    # Reemplazamos BCELoss por nuestra función de pérdida extraída del artículo
+    criterion = ArticleMSELoss() 
     # Optimizador (el que ajusta los pesos de la red)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     

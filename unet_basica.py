@@ -27,16 +27,17 @@ class SquareDataset(Dataset):
         # Crear máscara base en negro
         mask = np.zeros((1, self.image_size, self.image_size), dtype=np.float32) # Crear máscara base en negro
 
-        # Definir tamaño y posición aleatoria de un cuadrado
-        size = np.random.randint(10, 20) # Definir tamaño y posición aleatoria de un cuadrado
-        x = np.random.randint(0, self.image_size - size) # Posición aleatoria en X
-        y = np.random.randint(0, self.image_size - size) # Posición aleatoria en Y
+        # Definir tamaño y posición aleatoria para dos cuadrados
+        for _ in range(2):
+            size = np.random.randint(10, 20) # Definir tamaño y posición aleatoria de un cuadrado
+            x = np.random.randint(0, self.image_size - size) # Posición aleatoria en X
+            y = np.random.randint(0, self.image_size - size) # Posición aleatoria en Y
 
-        # Dibujar el cuadrado en la imagen (color blanco = 1.0)
-        image[0, y:y+size, x:x+size] = 1.0
-        # Dibujar el cuadrado en la máscara (color blanco = 1.0)
-        # La máscara es nuestra "verdad absoluta" (Ground Truth)
-        mask[0, y:y+size, x:x+size] = 1.0 
+            # Dibujar el cuadrado en la imagen (color blanco = 1.0)
+            image[0, y:y+size, x:x+size] = 1.0
+            # Dibujar el cuadrado en la máscara (color blanco = 1.0)
+            # La máscara es nuestra "verdad absoluta" (Ground Truth)
+            mask[0, y:y+size, x:x+size] = 1.0 
 
         # PyTorch espera que los datos sean Tensores
         return torch.from_numpy(image), torch.from_numpy(mask)

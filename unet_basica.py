@@ -8,12 +8,12 @@ import matplotlib.pyplot as plt
 # =====================================================================
 # 1. DATASET: Generador de datos sintéticos (Cuadrados)
 # =====================================================================
-# En un proyecto real, aquí cargarías tus fotos desde una carpeta.
-# Para este ejemplo, generamos imágenes sobre la marcha.
+
+
 class SquareDataset(Dataset):
-    def __init__(self, num_samples=100, image_size=64):
-        self.num_samples = num_samples
-        self.image_size = image_size
+    def __init__(self, num_samples=100, image_size=64): # num_samples es el número de imágenes, image_size es el tamaño de la imagen
+        self.num_samples = num_samples # Número de imágenes
+        self.image_size = image_size # Tamaño de la imagen
 
     def __len__(self):
         # Le dice a PyTorch cuántos ejemplos hay en total
@@ -23,14 +23,14 @@ class SquareDataset(Dataset):
         # Esta función genera/carga UNA sola imagen y su máscara correspondiente.
         
         # Crear imagen base en negro (ruido de fondo)
-        image = np.random.normal(0, 0.1, (1, self.image_size, self.image_size)).astype(np.float32)
+        image = np.random.normal(0, 0.1, (1, self.image_size, self.image_size)).astype(np.float32) # Crear imagen base en negro (ruido de fondo)
         # Crear máscara base en negro
-        mask = np.zeros((1, self.image_size, self.image_size), dtype=np.float32)
+        mask = np.zeros((1, self.image_size, self.image_size), dtype=np.float32) # Crear máscara base en negro
 
         # Definir tamaño y posición aleatoria de un cuadrado
-        size = np.random.randint(10, 20)
-        x = np.random.randint(0, self.image_size - size)
-        y = np.random.randint(0, self.image_size - size)
+        size = np.random.randint(10, 20) # Definir tamaño y posición aleatoria de un cuadrado
+        x = np.random.randint(0, self.image_size - size) # Posición aleatoria en X
+        y = np.random.randint(0, self.image_size - size) # Posición aleatoria en Y
 
         # Dibujar el cuadrado en la imagen (color blanco = 1.0)
         image[0, y:y+size, x:x+size] = 1.0
@@ -45,6 +45,8 @@ class SquareDataset(Dataset):
 # =====================================================================
 # 2. MODELO: Arquitectura U-Net Básica
 # =====================================================================
+
+#Crea la red neuronal nn.Module es la clase base de Pytorch para todas las redes neuronales
 class BasicUNet(nn.Module):
     def __init__(self):
         super(BasicUNet, self).__init__()
@@ -52,58 +54,61 @@ class BasicUNet(nn.Module):
         # --- ENCODER (Camino de bajada - Extrae características) ---
         # Toma la imagen (1 canal) y aplica filtros para buscar patrones
         self.enc1 = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(16, 16, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(1, 16, kernel_size=3, padding=1), # 1 canal de entrada, 16 canales de salida, kernel de 3x3, padding de 1 para que no se encoja la imagen
+            nn.ReLU(inplace=True), # Función de activación ReLU activa las neuronas (Vuelve a 0 los valores negativos)
+            nn.Conv2d(16, 16, kernel_size=3, padding=1), # 16 canales de entrada, 16 canales de salida, kernel de 3x3, padding de 1 para que no se encoja la imagen
+            nn.ReLU(inplace=True) # Función de activación ReLU activa las neuronas (Vuelve a 0 los valores negativos)
         )
         # Reduce la imagen a la mitad de tamaño
-        self.pool1 = nn.MaxPool2d(2) 
+        self.pool1 = nn.MaxPool2d(2) # Reduce el tamaño de la imagen a la mitad (2x2)
         
         # --- BOTTLENECK (Fondo de la U) ---
-        self.bottleneck = nn.Sequential(
-            nn.Conv2d(16, 32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 32, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+        self.bottleneck = nn.Sequential( # Capa que procesa la imagen en su tamaño más pequeño
+            nn.Conv2d(16, 32, kernel_size=3, padding=1), # 16 canales de entrada, 32 canales de salida, kernel de 3x3, padding de 1 para que no se encoja la imagen
+            nn.ReLU(inplace=True), # Función de activación ReLU activa las neuronas (Vuelve a 0 los valores negativos)
+            nn.Conv2d(32, 32, kernel_size=3, padding=1), # 32 canales de entrada, 32 canales de salida, kernel de 3x3, padding de 1 para que no se encoja la imagen
+            nn.ReLU(inplace=True) # Función de activación ReLU activa las neuronas (Vuelve a 0 los valores negativos)
         )
         
         # --- DECODER (Camino de subida - Reconstruye la imagen) ---
         # Duplica el tamaño de la imagen
-        self.up1 = nn.ConvTranspose2d(32, 16, kernel_size=2, stride=2) 
+        self.up1 = nn.ConvTranspose2d(32, 16, kernel_size=2, stride=2) # Duplica el tamaño de la imagen y aumenta los canales
         
         # Al subir, concatenaremos con la información del encoder (Skip Connection)
         # Por eso recibe 32 canales (16 de la subida + 16 del encoder)
-        self.dec1 = nn.Sequential(
-            nn.Conv2d(32, 16, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(16, 16, kernel_size=3, padding=1),
-            nn.ReLU(inplace=True)
+        self.dec1 = nn.Sequential( # Capa que reconstruye la imagen
+            nn.Conv2d(32, 16, kernel_size=3, padding=1), # 32 canales de entrada, 16 canales de salida, kernel de 3x3, padding de 1 para que no se encoja la imagen
+            nn.ReLU(inplace=True),  # Función de activación ReLU activa las neuronas (Vuelve a 0 los valores negativos)
+            nn.Conv2d(16, 16, kernel_size=3, padding=1), # 16 canales de entrada, 16 canales de salida, kernel de 3x3, padding de 1 para que no se encoja la imagen
+            nn.ReLU(inplace=True) # Función de activación ReLU activa las neuronas (Vuelve a 0 los valores negativos)
         )
         
         # Capa final para sacar un solo canal (probabilidad de ser cuadrado o no)
-        self.out_conv = nn.Conv2d(16, 1, kernel_size=1)
+        self.out_conv = nn.Conv2d(16, 1, kernel_size=1) # Capa final para sacar un solo canal (probabilidad de ser cuadrado o no)
         # Sigmoide aprieta los valores entre 0 y 1
-        self.sigmoid = nn.Sigmoid()
+        self.sigmoid = nn.Sigmoid() # Función de activación Sigmoid aprieta los valores entre 0 y 1
 
-    def forward(self, x):
-        # Paso hacia adelante (cómo fluye la información por la red)
+        #El sigmoide es una funcion que transforma los valores de la red neuronal en valores entre 0 y 1
+        #El valor 0 significa que no es un cuadrado
+        #El valor 1 significa que es un cuadrado
+
+    def forward(self, x): # Paso hacia adelante (cómo fluye la información por la red)
         
         # 1. Bajada
-        e1 = self.enc1(x)
-        p1 = self.pool1(e1)
+        e1 = self.enc1(x) # Entrada de la red
+        p1 = self.pool1(e1) # Reducción de tamaño
         
         # 2. Fondo
-        b = self.bottleneck(p1)
+        b = self.bottleneck(p1) # Procesamiento de la imagen
         
         # 3. Subida con Skip Connection
-        u1 = self.up1(b)
-        cat1 = torch.cat([u1, e1], dim=1) # <- ¡El secreto de la U-Net!
-        d1 = self.dec1(cat1)
+        u1 = self.up1(b) # Aumento de tamaño
+        cat1 = torch.cat([u1, e1], dim=1) # <- ¡El secreto de la U-Net! #Concatenacion de la informacion del encoder y del decoder
+        d1 = self.dec1(cat1) # Reconstruccion de la imagen
         
         # 4. Salida
-        out = self.out_conv(d1)
-        return self.sigmoid(out)
+        out = self.out_conv(d1) # Salida de la red
+        return self.sigmoid(out) # Salida con sigmoide
 
 
 # =====================================================================

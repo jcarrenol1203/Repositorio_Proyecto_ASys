@@ -189,11 +189,11 @@ def train_model():
 # =====================================================================
 # 4. VISUALIZACIÓN DE RESULTADOS
 # =====================================================================
-def visualize_results(model, dataset, num_images=3):
+def visualize_results(model, dataset, num_images=5):
     model.eval() # Modo evaluación (no se ajustan pesos)
     
     # Crear una figura con múltiples filas (una por cada imagen)
-    fig, axes = plt.subplots(num_images, 3, figsize=(15, 5 * num_images))
+    fig, axes = plt.subplots(num_images, 2, figsize=(10, 5 * num_images))
     
     # Si solo es una imagen, axes es 1D, lo convertimos a 2D para que el for funcione igual
     if num_images == 1:
@@ -202,7 +202,7 @@ def visualize_results(model, dataset, num_images=3):
     with torch.no_grad(): # No calcular gradientes ahorra memoria
         for i in range(num_images):
             # Tomamos una imagen nueva del dataset
-            image, real_mask = dataset[i] 
+            image, _ = dataset[i] 
             
             # A PyTorch le gustan los lotes. Añadimos una dimensión extra al principio (1, C, H, W)
             input_tensor = image.unsqueeze(0) 
@@ -210,18 +210,15 @@ def visualize_results(model, dataset, num_images=3):
             
             # Convertimos los tensores de PyTorch a arreglos de Numpy para dibujarlos
             img_np = image.squeeze().numpy()
-            real_mask_np = real_mask.squeeze().numpy()
             pred_mask_np = predicted_mask.squeeze().numpy()
             
             axes[i][0].imshow(img_np, cmap='gray')
-            axes[i][1].imshow(real_mask_np, cmap='gray')
-            axes[i][2].imshow(pred_mask_np, cmap='gray')
+            axes[i][1].imshow(pred_mask_np, cmap='gray')
             
             # Solo poner los títulos en la primera fila para que no se vea sobrecargado
             if i == 0:
                 axes[i][0].set_title('Imagen de Entrada (Cuadrado con ruido)')
-                axes[i][1].set_title('Máscara Real (Lo que queremos)')
-                axes[i][2].set_title('Predicción de la U-Net')
+                axes[i][1].set_title('Predicción de la U-Net')
                 
             for ax in axes[i]:
                 ax.axis('off')
@@ -231,4 +228,4 @@ def visualize_results(model, dataset, num_images=3):
 
 if __name__ == "__main__":
     trained_model, eval_dataset = train_model()
-    visualize_results(trained_model, eval_dataset)
+    visualize_results(trained_model, eval_dataset, num_images=5)

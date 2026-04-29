@@ -4,6 +4,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import matplotlib.pyplot as plt
+import torch.nn.functional as F
 
 # =====================================================================
 # 1. DATASET: Generador de datos sintéticos (Cuadrados)
@@ -20,27 +21,44 @@ class SquareDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, idx):
-        # Esta función genera/carga UNA sola imagen y su máscara correspondiente.
-        
-        # Crear imagen base en negro (ruido de fondo)
-        image = np.random.normal(0, 0.1, (1, self.image_size, self.image_size)).astype(np.float32) # Crear imagen base en negro (ruido de fondo)
-        # Crear máscara base en negro
-        mask = np.zeros((1, self.image_size, self.image_size), dtype=np.float32) # Crear máscara base en negro
+        # 1. Crear la imagen limpia (Ground Truth - x_t en el paper)
+        # Empezamos con un fondo negro
+        clean_mask = np.zeros((1, self.image_size, self.image_size), dtype=np.float32)
 
-        # Definir tamaño y posición aleatoria para dos cuadrados
+        # Dibujar dos cuadrados aleatorios
         for _ in range(2):
-            size = np.random.randint(10, 20) # Definir tamaño y posición aleatoria de un cuadrado
-            x = np.random.randint(0, self.image_size - size) # Posición aleatoria en X
-            y = np.random.randint(0, self.image_size - size) # Posición aleatoria en Y
+            size = np.random.randint(10, 25)
+            x = np.random.randint(0, self.image_size - size)
+            y = np.random.randint(0, self.image_size - size)
+            clean_mask[0, y:y+size, x:x+size] = 1.0
 
-            # Dibujar el cuadrado en la imagen (color blanco = 1.0)
-            image[0, y:y+size, x:x+size] = 1.0
-            # Dibujar el cuadrado en la máscara (color blanco = 1.0)
-            # La máscara es nuestra "verdad absoluta" (Ground Truth)
-            mask[0, y:y+size, x:x+size] = 1.0 
+        # Convertimos a Tensor de PyTorch para aplicar el desenfoque
+        clean_tensor = torch.from_numpy(clean_mask) # [1, H, W]
+        
+        # 2. Simular el proceso de degradación: y = k * x + n
+        # a) Desenfoque (Convolución con kernel k)
+        # Creamos un kernel Gaussiano de 7x7
+        k_size = 7
+        sigma = 2.0
+        coords = torch.arange(k_size) - (k_size - 1) / 2.0
+        g_1d = torch.exp(-coords.pow(2) / (2 * sigma**2))
+        g_2d = g_1d.view(-1, 1) * g_1d.view(1, -1)
+        kernel = (g_2d / g_2d.sum()).view(1, 1, k_size, k_size)
 
-        # PyTorch espera que los datos sean Tensores
-        return torch.from_numpy(image), torch.from_numpy(mask)
+        # Aplicamos la convolución (desenfoque)
+        # unsqueeze(0) añade la dimensión de batch que espera conv2d
+        blurred = F.conv2d(clean_tensor.unsqueeze(0), kernel, padding=k_size//2)
+        blurred = blurred.squeeze(0) # Quitamos el batch
+
+        # b) Ruido Aditivo (n)
+        # Generamos ruido gaussiano aleatorio
+        noise = torch.randn_like(blurred) * 0.05
+        
+        # Imagen observada con degradación (x_o en el paper)
+        observed_image = blurred + noise
+
+        # Retornamos la imagen degradada (entrada) y la limpia (objetivo)
+        return observed_image, clean_tensor
 
 
 # =====================================================================
@@ -143,12 +161,12 @@ class ArticleMSELoss(nn.Module):
         return L_theta
 
 def train_model():
-    print("Preparando datos...")
+    print("Preparando datos...", flush=True)
     # Creamos el dataset y el DataLoader (este último hace los "lotes" o batches)
-    dataset = SquareDataset(num_samples=1000, image_size=64)
-    dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
+    dataset = SquareDataset(num_samples=200, image_size=64)
+    dataloader = DataLoader(dataset, batch_size=8, shuffle=True)
     
-    print("Inicializando modelo U-Net...")
+    print("Inicializando modelo U-Net...", flush=True)
     model = BasicUNet()
     
     # Reemplazamos BCELoss por nuestra función de pérdida extraída del artículo
@@ -156,15 +174,15 @@ def train_model():
     # Optimizador (el que ajusta los pesos de la red)
     optimizer = optim.Adam(model.parameters(), lr=0.005)
     
-    epochs = 5
-    print("Iniciando entrenamiento (esto puede tomar unos segundos)...")
+    epochs = 3
+    print("Iniciando entrenamiento (esto puede tomar unos segundos)...", flush=True)
     
     for epoch in range(epochs):
         model.train() # Poner el modelo en modo entrenamiento
         epoch_loss = 0
         
         for images, masks in dataloader:
-            # 1. Reiniciar gradientes
+            # 1. Reiniciar gradiente
             optimizer.zero_grad()
             
             # 2. Forward: pasar las imágenes por la red
@@ -181,9 +199,9 @@ def train_model():
             
             epoch_loss += loss.item()
             
-        print(f"Época [{epoch+1}/{epochs}], Pérdida (Error): {epoch_loss/len(dataloader):.4f}")
+        print(f"Época [{epoch+1}/{epochs}], Pérdida (Error): {epoch_loss/len(dataloader):.4f}", flush=True)
     
-    print("¡Entrenamiento completado!")
+    print("¡Entrenamiento completado!", flush=True)
     return model, dataset
 
 
@@ -218,13 +236,15 @@ def visualize_results(model, dataset, num_images=5):
             
             # Solo poner los títulos en la primera fila para que no se vea sobrecargado
             if i == 0:
-                axes[i][0].set_title('Imagen de Entrada (Cuadrado con ruido)')
-                axes[i][1].set_title('Predicción de la U-Net')
+                axes[i][0].set_title('Entrada Degradada (Blur + Ruido)')
+                axes[i][1].set_title('Reconstrucción (U-Net)')
                 
             for ax in axes[i]:
                 ax.axis('off')
     
     plt.tight_layout()
+    plt.savefig('resultado_deconvolucion.png')
+    print("Gráfica guardada como 'resultado_deconvolucion.png'")
     plt.show()
 
 if __name__ == "__main__":

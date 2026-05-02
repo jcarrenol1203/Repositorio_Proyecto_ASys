@@ -177,11 +177,12 @@ def train_model():
     epochs = 3
     print("Iniciando entrenamiento (esto puede tomar unos segundos)...", flush=True)
     
+    total_batches = len(dataloader)
     for epoch in range(epochs):
         model.train() # Poner el modelo en modo entrenamiento
         epoch_loss = 0
         
-        for images, masks in dataloader:
+        for batch_idx, (images, masks) in enumerate(dataloader):
             # 1. Reiniciar gradiente
             optimizer.zero_grad()
             
@@ -199,7 +200,13 @@ def train_model():
             
             epoch_loss += loss.item()
             
-        print(f"Época [{epoch+1}/{epochs}], Pérdida (Error): {epoch_loss/len(dataloader):.4f}", flush=True)
+            # Porcentaje de avance dentro de la época
+            batch_pct = (batch_idx + 1) / total_batches * 100
+            print(f"  Época [{epoch+1}/{epochs}] - Batch [{batch_idx+1}/{total_batches}] ({batch_pct:.1f}%) - Loss: {loss.item():.4f}", flush=True)
+            
+        epoch_pct = (epoch + 1) / epochs * 100
+        print(f"[OK] Epoca [{epoch+1}/{epochs}] completada ({epoch_pct:.1f}% del entrenamiento) | Perdida promedio: {epoch_loss/total_batches:.4f}", flush=True)
+        print("-" * 60, flush=True)
     
     print("¡Entrenamiento completado!", flush=True)
     return model, dataset

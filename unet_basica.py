@@ -4,36 +4,66 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import matplotlib.pyplot as plt
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 import torch.nn.functional as F
 
 # =====================================================================
-# 1. DATASET: Generador de datos sintéticos (Cuadrados)
+# 1. DATASET: Generador de datos sintéticos (Cuadrados, Círculos, Triángulos)
 # =====================================================================
 
 
-class SquareDataset(Dataset):
-    def __init__(self, num_samples=100, image_size=64): # num_samples es el número de imágenes, image_size es el tamaño de la imagen
-        self.num_samples = num_samples # Número de imágenes
-        self.image_size = image_size # Tamaño de la imagen
+class ShapeDataset(Dataset):
+    def __init__(self, num_samples=100, image_size=64, num_shapes=2):
+        self.num_samples = num_samples  # Número de imágenes
+        self.image_size = image_size    # Tamaño de la imagen
+        self.num_shapes = num_shapes    # Cantidad de formas por muestra
 
     def __len__(self):
-        # Le dice a PyTorch cuántos ejemplos hay en total
         return self.num_samples
 
     def __getitem__(self, idx):
         # 1. Crear la imagen limpia (Ground Truth - x_t en el paper)
         # Empezamos con un fondo negro
-        clean_mask = np.zeros((1, self.image_size, self.image_size), dtype=np.float32)
+        clean_mask = np.zeros((self.image_size, self.image_size), dtype=np.float32)
 
-        # Dibujar dos cuadrados aleatorios
-        for _ in range(2):
-            size = np.random.randint(10, 25)
-            x = np.random.randint(0, self.image_size - size)
-            y = np.random.randint(0, self.image_size - size)
-            clean_mask[0, y:y+size, x:x+size] = 1.0
+        # Dibujar formas aleatorias
+        for _ in range(self.num_shapes):
+            shape_type = np.random.choice(['square', 'circle', 'triangle'])
+            if shape_type == 'square':
+                size = np.random.randint(10, 25)
+                x = np.random.randint(0, self.image_size - size)
+                y = np.random.randint(0, self.image_size - size)
+                clean_mask[y:y+size, x:x+size] = 1.0
+            elif shape_type == 'circle':
+                radius = np.random.randint(5, 15)
+                cx = np.random.randint(radius, self.image_size - radius)
+                cy = np.random.randint(radius, self.image_size - radius)
+                if cv2 is not None:
+                    cv2.circle(clean_mask, (cx, cy), radius, 1.0, -1)
+                else:
+                    # Simple numpy fallback: draw a filled circle
+                    Y, X = np.ogrid[:self.image_size, :self.image_size]
+                    dist = (X - cx) ** 2 + (Y - cy) ** 2
+                    mask = dist <= radius ** 2
+                    clean_mask[mask] = 1.0
+            else:  # triangle
+                pts = np.random.randint(0, self.image_size, (3, 2))
+                if cv2 is not None:
+                    cv2.fillPoly(clean_mask, [pts], 1.0)
+                else:
+                    # Simple numpy fallback: draw bounding box of triangle
+                    min_x, min_y = pts.min(axis=0)
+                    max_x, max_y = pts.max(axis=0)
+                    clean_mask[min_y:max_y+1, min_x:max_x+1] = 1.0
+
+        # Añadir canal de profundidad
+        clean_mask = clean_mask[np.newaxis, :, :]
 
         # Convertimos a Tensor de PyTorch para aplicar el desenfoque
-        clean_tensor = torch.from_numpy(clean_mask) # [1, H, W]
+        clean_tensor = torch.from_numpy(clean_mask)  # [1, H, W]
         
         # 2. Simular el proceso de degradación: y = k * x + n
         # a) Desenfoque (Convolución con kernel k)
@@ -163,7 +193,7 @@ class ArticleMSELoss(nn.Module):
 def train_model():
     print("Preparando datos...", flush=True)
     # Creamos el dataset y el DataLoader (este último hace los "lotes" o batches)
-    dataset = SquareDataset(num_samples=200, image_size=64)
+    dataset = ShapeDataset(num_samples=200, image_size=64)
     dataloader = DataLoader(dataset, batch_size=8, shuffle=True)
     
     print("Inicializando modelo U-Net...", flush=True)

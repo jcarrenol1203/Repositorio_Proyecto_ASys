@@ -15,80 +15,89 @@ import torch.nn.functional as F # Importa funciones sin estado de PyTorch (como 
 # =====================================================================
 
 
-class ShapeDataset(Dataset): # Define una clase que hereda de Dataset de PyTorch para crear nuestros datos
-    def __init__(self, num_samples=100, image_size=64, num_shapes=2): # Método constructor que inicializa el dataset
-        self.num_samples = num_samples  # Define el número total de imágenes que tendrá el dataset
-        self.image_size = image_size    # Define el tamaño (ancho y alto) de cada imagen cuadrada (ej: 64x64)
-        self.num_shapes = num_shapes    # Define cuántas figuras geométricas habrá en cada imagen
+class ShapeDataset(Dataset):
+    def __init__(self, num_samples=100, image_size=64, min_shapes=3, max_shapes=6):
+        self.num_samples = num_samples
+        self.image_size = image_size
+        self.min_shapes = min_shapes
+        self.max_shapes = max_shapes
 
-    def __len__(self): # Método que PyTorch usa para saber el tamaño del dataset
-        return self.num_samples # Retorna el número total de muestras
+    def __len__(self):
+        return self.num_samples
 
-    def __getitem__(self, idx): # Método que PyTorch usa para obtener una imagen específica mediante su índice (idx)
-        # 1. Crear la imagen limpia (Ground Truth - x_t en el paper)
-        # Empezamos con un fondo negro (matriz de ceros) del tamaño especificado
-        clean_mask = np.zeros((self.image_size, self.image_size), dtype=np.float32) 
-
-        # Dibujar formas aleatorias
-        for _ in range(self.num_shapes): # Bucle para dibujar la cantidad de formas indicadas
-            shape_type = np.random.choice(['square', 'circle', 'triangle']) # Elige una forma al azar entre las tres opciones
-            if shape_type == 'square': # Si la forma elegida es un cuadrado...
-                size = np.random.randint(10, 25) # Elige un tamaño de lado aleatorio entre 10 y 25 píxeles
-                x = np.random.randint(0, self.image_size - size) # Elige una coordenada X aleatoria que no se salga de la imagen
-                y = np.random.randint(0, self.image_size - size) # Elige una coordenada Y aleatoria que no se salga de la imagen
-                clean_mask[y:y+size, x:x+size] = 1.0 # Rellena la zona del cuadrado con 1s (color blanco)
-            elif shape_type == 'circle': # Si la forma elegida es un círculo...
-                radius = np.random.randint(5, 15) # Elige un radio aleatorio entre 5 y 15 píxeles
-                cx = np.random.randint(radius, self.image_size - radius) # Elige centro X aleatorio sin salir del borde
-                cy = np.random.randint(radius, self.image_size - radius) # Elige centro Y aleatorio sin salir del borde
-                if cv2 is not None: # Si OpenCV está instalado...
-                    cv2.circle(clean_mask, (cx, cy), radius, 1.0, -1) # Dibuja un círculo relleno (grosor -1) (Circulo solido) de color blanco (1.0)
-                else: # Si no está instalado OpenCV, usa NumPy como plan B
-                    # Simple numpy fallback: draw a filled circle
-                    Y, X = np.ogrid[:self.image_size, :self.image_size] # Crea una cuadrícula de coordenadas Y y X
-                    dist = (X - cx) ** 2 + (Y - cy) ** 2 # Calcula la distancia al cuadrado desde cada píxel al centro
-                    mask = dist <= radius ** 2 # Crea una máscara booleana para los píxeles dentro del radio
-                    clean_mask[mask] = 1.0 # Pinta esos píxeles de blanco (1.0)
-            else:  # Si la forma es un triángulo (triangle)
-                pts = np.random.randint(0, self.image_size, (3, 2)) # Genera 3 puntos (vértices) aleatorios (X, Y)
-                if cv2 is not None: # Si OpenCV está instalado...
-                    cv2.fillPoly(clean_mask, [pts], 1.0) # Rellena el polígono formado por los 3 puntos con color blanco
-                else: # Si no hay OpenCV, usa NumPy (plan B)
-                    # Simple numpy fallback: draw bounding box of triangle
-                    min_x, min_y = pts.min(axis=0) # Encuentra la coordenada X e Y mínima de los 3 vértices
-                    max_x, max_y = pts.max(axis=0) # Encuentra la coordenada X e Y máxima
-                    clean_mask[min_y:max_y+1, min_x:max_x+1] = 1.0 # Dibuja un rectángulo que envuelve al triángulo (aproximación)
-
-        # Añadir canal de profundidad (PyTorch espera [Canales, Alto, Ancho])
-        clean_mask = clean_mask[np.newaxis, :, :] # Añade una dimensión extra al principio. Pasa de (64, 64) a (1, 64, 64)
-
-        # Convertimos la matriz de NumPy a un Tensor de PyTorch (el formato que usa la red neuronal)
-        clean_tensor = torch.from_numpy(clean_mask)  # [1, H, W] (el 1 es de los canales de color, en este caso solo uno porque es blanco y negro)
+    def __getitem__(self, idx):
+        # 1. Ground Truth con variabilidad (x_t)
+        clean_mask = np.zeros((self.image_size, self.image_size), dtype=np.float32)
         
-        # 2. Simular el proceso de degradación: y = k * x + n
-        # a) Desenfoque (Convolución con kernel k)
-        # Creamos un kernel Gaussiano de 7x7 para emborronar la imagen
-        k_size = 7 # Tamaño del kernel (ventana) que emborrona
-        sigma = 2.0 # Desviación estándar (qué tan fuerte es el desenfoque)
-        coords = torch.arange(k_size) - (k_size - 1) / 2.0 # Crea un vector centrado en 0 (ej: -3, -2, -1, 0, 1, 2, 3)
-        g_1d = torch.exp(-coords.pow(2) / (2 * sigma**2)) # Aplica la fórmula de la campana de Gauss en 1D
-        g_2d = g_1d.view(-1, 1) * g_1d.view(1, -1) # Multiplica el vector 1D consigo mismo transpuesto para crear una matriz 2D
-        kernel = (g_2d / g_2d.sum()).view(1, 1, k_size, k_size) # Normaliza para que sume 1 y le da la forma (Canal_out, Canal_in, Alto, Ancho)
+        # Añadir un fondo gris tenue con ruido para simular texturas de fondo (como en microscopía)
+        background_noise = np.random.normal(0.05, 0.01, (self.image_size, self.image_size)).astype(np.float32)
+        clean_mask = np.clip(clean_mask + background_noise, 0, 1)
 
-        # Aplicamos la convolución (desenfoque) usando el kernel Gaussiano
-        # unsqueeze(0) añade la dimensión temporal de "batch" (lote) que exige F.conv2d: [1, 1, 64, 64]
-        blurred = F.conv2d(clean_tensor.unsqueeze(0), kernel, padding=k_size//2) # padding mantiene el tamaño original de la imagen
-        blurred = blurred.squeeze(0) # Quitamos la dimensión de lote extra añadida antes
-
-        # b) Ruido Aditivo (n)
-        # Generamos ruido gaussiano aleatorio con la misma forma que la imagen emborronada
-        noise = torch.randn_like(blurred) * 0.05 # torch.randn_like crea valores normales estándar; multiplicamos por 0.05 para bajar la intensidad
+        num_shapes = np.random.randint(self.min_shapes, self.max_shapes + 1)
         
-        # Imagen observada con degradación (x_o en el paper), sumando imagen borrosa + ruido
-        observed_image = blurred + noise 
+        for _ in range(num_shapes):
+            shape_type = np.random.choice(['square', 'circle', 'triangle'])
+            intensity = np.random.uniform(0.5, 0.9) # Intensidades variables
+            
+            if shape_type == 'square':
+                size = np.random.randint(10, 20)
+                x, y = np.random.randint(0, self.image_size - size, 2)
+                # Mezclamos la forma con el fondo usando el máximo para superposición
+                clean_mask[y:y+size, x:x+size] = np.maximum(clean_mask[y:y+size, x:x+size], intensity)
+            
+            elif shape_type == 'circle':
+                radius = np.random.randint(6, 14)
+                cx, cy = np.random.randint(radius, self.image_size - radius, 2)
+                if cv2 is not None:
+                    temp_mask = np.zeros_like(clean_mask)
+                    cv2.circle(temp_mask, (cx, cy), radius, float(intensity), -1)
+                    clean_mask = np.maximum(clean_mask, temp_mask)
+                else:
+                    Y, X = np.ogrid[:self.image_size, :self.image_size]
+                    dist = (X - cx) ** 2 + (Y - cy) ** 2
+                    mask = dist <= radius ** 2
+                    clean_mask[mask] = np.maximum(clean_mask[mask], intensity)
+            
+            else: # Triangle
+                pts = np.random.randint(0, self.image_size, (3, 2))
+                if cv2 is not None:
+                    temp_mask = np.zeros_like(clean_mask)
+                    cv2.fillPoly(temp_mask, [pts], float(intensity))
+                    clean_mask = np.maximum(clean_mask, temp_mask)
+                else:
+                    min_x, min_y = pts.min(axis=0)
+                    max_x, max_y = pts.max(axis=0)
+                    clean_mask[min_y:max_y+1, min_x:max_x+1] = np.maximum(clean_mask[min_y:max_y+1, min_x:max_x+1], intensity)
 
-        # Retornamos la imagen degradada (entrada de la red) y la limpia (objetivo a alcanzar)
+        # Convertir a tensor [1, H, W]
+        clean_tensor = torch.from_numpy(clean_mask).unsqueeze(0)
+        
+        # 2. Degradación más agresiva (y = k * x + n)
+        # a) Desenfoque Gaussiano variable
+        k_size = 9 
+        sigma = np.random.uniform(1.2, 2.5) # Cada imagen tiene un desenfoque distinto
+        coords = torch.arange(k_size) - (k_size - 1) / 2.0
+        g_1d = torch.exp(-coords.pow(2) / (2 * sigma**2))
+        kernel = (g_1d.view(-1, 1) * g_1d.view(1, -1))
+        kernel = (kernel / kernel.sum()).view(1, 1, k_size, k_size)
+
+        blurred = F.conv2d(clean_tensor.unsqueeze(0), kernel, padding=k_size//2).squeeze(0)
+
+        # b) Ruido Aditivo Gaussiano fuerte
+        noise_std = 0.1 # Aumentamos la desviación estándar del ruido
+        noise = torch.randn_like(blurred) * noise_std
+        
+        # c) Ruido "Sal y Pimienta" (Salt & Pepper)
+        observed_image = blurred + noise
+        sp_noise = torch.rand_like(observed_image)
+        observed_image[sp_noise < 0.01] = 0.0 # 1% de píxeles negros
+        observed_image[sp_noise > 0.99] = 1.0 # 1% de píxeles blancos
+
+        # Aseguramos que los valores sigan entre 0 y 1
+        observed_image = torch.clamp(observed_image, 0, 1)
+
         return observed_image, clean_tensor 
+ 
 
 
 # =====================================================================
@@ -222,10 +231,9 @@ def visualize_dataset_sample(dataset): # Función que muestra un ejemplo del dat
 
 def train_model(): # Función que controla todo el ciclo de aprendizaje de la red
     print("Preparando datos...", flush=True) # Imprime un mensaje en consola
-    # Creamos un dataset de 200 imágenes, de 64x64 píxeles cada una
-    dataset = ShapeDataset(num_samples=200, image_size=64)
+    # Creamos un dataset de 400 imágenes (antes 200) para manejar la mayor dificultad
+    dataset = ShapeDataset(num_samples=400, image_size=64, min_shapes=3, max_shapes=6)
     # DataLoader envuelve el dataset para entregar las imágenes a la red en "lotes" (batches) de 8 en 8
-    # shuffle=True hace que el orden sea aleatorio en cada época para evitar que la red memorice el orden
     dataloader = DataLoader(dataset, batch_size=8, shuffle=True) 
 
     # Mostrar un ejemplo del dataset antes de entrenar
@@ -240,7 +248,7 @@ def train_model(): # Función que controla todo el ciclo de aprendizaje de la re
     # Optimizador Adam: es el "profesor" que cambia los pesos de la red basándose en el error (learning rate de 0.005) (lr es que tanto se equivoca al ajustar los pesos)
     optimizer = optim.Adam(model.parameters(), lr=0.005) 
     
-    epochs = 3 # Número de veces que la red verá el conjunto completo de datos (épocas)
+    epochs = 5 # Aumentamos las épocas para que aprenda mejor los patrones difíciles
     print("Iniciando entrenamiento (esto puede tomar unos segundos)...", flush=True)
     
     total_batches = len(dataloader) # Cantidad total de lotes (ej: 200/8 = 25 lotes por época)
@@ -328,3 +336,4 @@ def visualize_results(model, dataset, num_images=5): # Función para probar y ve
 if __name__ == "__main__": # Este bloque solo se ejecuta si corremos este archivo directamente (no si lo importamos en otro archivo)
     trained_model, eval_dataset = train_model() # Ejecuta el entrenamiento y guarda el modelo y los datos
     visualize_results(trained_model, eval_dataset, num_images=3) # Ejecuta la visualización final con 3 ejemplos
+    

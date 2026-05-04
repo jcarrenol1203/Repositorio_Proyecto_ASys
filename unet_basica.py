@@ -42,7 +42,7 @@ class ShapeDataset(Dataset): # Define una clase que hereda de Dataset de PyTorch
                 cx = np.random.randint(radius, self.image_size - radius) # Elige centro X aleatorio sin salir del borde
                 cy = np.random.randint(radius, self.image_size - radius) # Elige centro Y aleatorio sin salir del borde
                 if cv2 is not None: # Si OpenCV está instalado...
-                    cv2.circle(clean_mask, (cx, cy), radius, 1.0, -1) # Dibuja un círculo relleno (grosor -1) de color blanco (1.0)
+                    cv2.circle(clean_mask, (cx, cy), radius, 1.0, -1) # Dibuja un círculo relleno (grosor -1) (Circulo solido) de color blanco (1.0)
                 else: # Si no está instalado OpenCV, usa NumPy como plan B
                     # Simple numpy fallback: draw a filled circle
                     Y, X = np.ogrid[:self.image_size, :self.image_size] # Crea una cuadrícula de coordenadas Y y X
@@ -63,7 +63,7 @@ class ShapeDataset(Dataset): # Define una clase que hereda de Dataset de PyTorch
         clean_mask = clean_mask[np.newaxis, :, :] # Añade una dimensión extra al principio. Pasa de (64, 64) a (1, 64, 64)
 
         # Convertimos la matriz de NumPy a un Tensor de PyTorch (el formato que usa la red neuronal)
-        clean_tensor = torch.from_numpy(clean_mask)  # [1, H, W]
+        clean_tensor = torch.from_numpy(clean_mask)  # [1, H, W] (el 1 es de los canales de color, en este caso solo uno porque es blanco y negro)
         
         # 2. Simular el proceso de degradación: y = k * x + n
         # a) Desenfoque (Convolución con kernel k)
@@ -198,6 +198,28 @@ class ArticleMSELoss(nn.Module): # Hereda de nn.Module porque es una función ma
         
         return L_theta # Devuelve un solo número (escalar) que representa qué tan mal lo hizo la red
 
+def visualize_dataset_sample(dataset): # Función que muestra un ejemplo del dataset ANTES de entrenar
+    """Muestra una muestra del dataset de entrenamiento: imagen degradada y su ground truth."""
+    observed, clean = dataset[0] # Toma la primera muestra del dataset (imagen degradada y limpia)
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5)) # Crea una figura con 1 fila y 2 columnas
+
+    axes[0].imshow(observed.squeeze().numpy(), cmap='gray') # Muestra la imagen degradada (con blur + ruido)
+    axes[0].set_title('Entrada Degradada (Blur + Ruido)') # Título de la primera columna
+    axes[0].axis('off') # Oculta los ejes
+
+    axes[1].imshow(clean.squeeze().numpy(), cmap='gray') # Muestra la imagen limpia original (ground truth)
+    axes[1].set_title('Ground Truth (Imagen Limpia)') # Título de la segunda columna
+    axes[1].axis('off') # Oculta los ejes
+
+    plt.suptitle('Ejemplo del Dataset de Entrenamiento', fontsize=14, fontweight='bold', y=0.98) # Título general
+    plt.tight_layout() # Ajusta el espaciado
+    plt.subplots_adjust(top=0.85) # Deja espacio arriba para que el título no se superponga
+    plt.savefig('ejemplo_dataset.png') # Guarda la imagen en disco
+    print("Ejemplo del dataset guardado como 'ejemplo_dataset.png'", flush=True)
+    plt.show() # Muestra la ventana gráfica
+
+
 def train_model(): # Función que controla todo el ciclo de aprendizaje de la red
     print("Preparando datos...", flush=True) # Imprime un mensaje en consola
     # Creamos un dataset de 200 imágenes, de 64x64 píxeles cada una
@@ -205,13 +227,17 @@ def train_model(): # Función que controla todo el ciclo de aprendizaje de la re
     # DataLoader envuelve el dataset para entregar las imágenes a la red en "lotes" (batches) de 8 en 8
     # shuffle=True hace que el orden sea aleatorio en cada época para evitar que la red memorice el orden
     dataloader = DataLoader(dataset, batch_size=8, shuffle=True) 
+
+    # Mostrar un ejemplo del dataset antes de entrenar
+    print("Mostrando ejemplo del dataset de entrenamiento...", flush=True)
+    visualize_dataset_sample(dataset)
     
     print("Inicializando modelo U-Net...", flush=True)
     model = BasicUNet() # Instanciamos nuestra red U-Net
     
     # criterion es la métrica con la que evaluaremos a la red (nuestra clase ArticleMSELoss definida arriba)
     criterion = ArticleMSELoss() 
-    # Optimizador Adam: es el "profesor" que cambia los pesos de la red basándose en el error (learning rate de 0.005)
+    # Optimizador Adam: es el "profesor" que cambia los pesos de la red basándose en el error (learning rate de 0.005) (lr es que tanto se equivoca al ajustar los pesos)
     optimizer = optim.Adam(model.parameters(), lr=0.005) 
     
     epochs = 3 # Número de veces que la red verá el conjunto completo de datos (épocas)
@@ -260,7 +286,7 @@ def train_model(): # Función que controla todo el ciclo de aprendizaje de la re
 def visualize_results(model, dataset, num_images=5): # Función para probar y ver visualmente qué tan bien aprendió el modelo
     model.eval() # Pone el modelo en "modo evaluación" (desactiva actualizaciones y fija el comportamiento)
     
-    # Crea una cuadrícula de gráficos de Matplotlib: num_images filas y 2 columnas
+    # Crea una cuadrícula de gráficos de Matplotlib: num_images filas y 2 columnas (entrada, predicción)
     fig, axes = plt.subplots(num_images, 2, figsize=(10, 5 * num_images)) 
     
     # Si solo pedimos ver 1 imagen, axes es una lista simple (1D). Lo forzamos a ser 2D para no romper el bucle siguiente
@@ -278,11 +304,11 @@ def visualize_results(model, dataset, num_images=5): # Función para probar y ve
             predicted_mask = model(input_tensor) # Pasa la imagen por el modelo entrenado y obtiene la reconstrucción
             
             # squeeze() remueve las dimensiones de tamaño 1 (lote y canales). numpy() convierte el tensor en un arreglo normal para dibujar
-            img_np = image.squeeze().numpy() # Imagen de entrada
-            pred_mask_np = predicted_mask.squeeze().numpy() # Imagen predicha
+            img_np = image.squeeze().numpy() # Imagen de entrada degradada
+            pred_mask_np = predicted_mask.squeeze().numpy() # Imagen predicha por la U-Net
             
-            axes[i][0].imshow(img_np, cmap='gray') # Dibuja la imagen original degradada en la primera columna (escala de grises)
-            axes[i][1].imshow(pred_mask_np, cmap='gray') # Dibuja la imagen limpia que predijo la U-Net en la segunda columna
+            axes[i][0].imshow(img_np, cmap='gray') # Dibuja la imagen degradada en la primera columna
+            axes[i][1].imshow(pred_mask_np, cmap='gray') # Dibuja la predicción de la U-Net en la segunda columna
             
             # Solo pone títulos en la primera fila para que la imagen final no quede sobrecargada de texto
             if i == 0:
@@ -292,11 +318,13 @@ def visualize_results(model, dataset, num_images=5): # Función para probar y ve
             for ax in axes[i]:
                 ax.axis('off') # Oculta los ejes numéricos (los bordes) de cada gráfico
     
+    plt.suptitle(f'Resultados de la U-Net: {num_images} ejemplos', fontsize=16, fontweight='bold', y=0.98) # Título general
     plt.tight_layout() # Ajusta automáticamente el espaciado para que nada se superponga
+    plt.subplots_adjust(top=0.92) # Deja un margen superior para que el título principal no choque
     plt.savefig('resultado_deconvolucion.png') # Guarda la imagen resultante en el disco
     print("Gráfica guardada como 'resultado_deconvolucion.png'")
     plt.show() # Muestra la ventana gráfica en la pantalla
 
 if __name__ == "__main__": # Este bloque solo se ejecuta si corremos este archivo directamente (no si lo importamos en otro archivo)
     trained_model, eval_dataset = train_model() # Ejecuta el entrenamiento y guarda el modelo y los datos
-    visualize_results(trained_model, eval_dataset, num_images=5) # Ejecuta la visualización final con 5 ejemplos
+    visualize_results(trained_model, eval_dataset, num_images=3) # Ejecuta la visualización final con 3 ejemplos

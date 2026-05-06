@@ -26,77 +26,74 @@ class ShapeDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, idx):
-        # 1. Ground Truth con variabilidad (x_t)
-        clean_mask = np.zeros((self.image_size, self.image_size), dtype=np.float32)
+        # 1. Ground Truth RGB (x_t)
+        # Inicializamos imagen RGB (H, W, 3)
+        clean_image = np.zeros((self.image_size, self.image_size, 3), dtype=np.float32)
         
-        # Añadir un fondo gris tenue con ruido para simular texturas de fondo (como en microscopía)
-        background_noise = np.random.normal(0.05, 0.01, (self.image_size, self.image_size)).astype(np.float32)
-        clean_mask = np.clip(clean_mask + background_noise, 0, 1)
+        # Fondo con color aleatorio muy tenue
+        bg_color = np.random.uniform(0.02, 0.08, size=3).astype(np.float32)
+        clean_image += bg_color
 
         num_shapes = np.random.randint(self.min_shapes, self.max_shapes + 1)
         
         for _ in range(num_shapes):
             shape_type = np.random.choice(['square', 'circle', 'triangle'])
-            intensity = np.random.uniform(0.5, 0.9) # Intensidades variables
+            color = np.random.uniform(0.4, 0.9, size=3).astype(np.float32) # Color RGB aleatorio
             
             if shape_type == 'square':
                 size = np.random.randint(10, 20)
                 x, y = np.random.randint(0, self.image_size - size, 2)
-                # Mezclamos la forma con el fondo usando el máximo para superposición
-                clean_mask[y:y+size, x:x+size] = np.maximum(clean_mask[y:y+size, x:x+size], intensity)
+                clean_image[y:y+size, x:x+size] = np.maximum(clean_image[y:y+size, x:x+size], color)
             
             elif shape_type == 'circle':
                 radius = np.random.randint(6, 14)
                 cx, cy = np.random.randint(radius, self.image_size - radius, 2)
                 if cv2 is not None:
-                    temp_mask = np.zeros_like(clean_mask)
-                    cv2.circle(temp_mask, (cx, cy), radius, float(intensity), -1)
-                    clean_mask = np.maximum(clean_mask, temp_mask)
+                    # CV2 usa BGR por defecto, pero aquí solo queremos colores aleatorios
+                    cv2.circle(clean_image, (cx, cy), radius, color.tolist(), -1)
                 else:
                     Y, X = np.ogrid[:self.image_size, :self.image_size]
                     dist = (X - cx) ** 2 + (Y - cy) ** 2
                     mask = dist <= radius ** 2
-                    clean_mask[mask] = np.maximum(clean_mask[mask], intensity)
+                    clean_image[mask] = np.maximum(clean_image[mask], color)
             
             else: # Triangle
                 pts = np.random.randint(0, self.image_size, (3, 2))
                 if cv2 is not None:
-                    temp_mask = np.zeros_like(clean_mask)
-                    cv2.fillPoly(temp_mask, [pts], float(intensity))
-                    clean_mask = np.maximum(clean_mask, temp_mask)
+                    cv2.fillPoly(clean_image, [pts], color.tolist())
                 else:
                     min_x, min_y = pts.min(axis=0)
                     max_x, max_y = pts.max(axis=0)
-                    clean_mask[min_y:max_y+1, min_x:max_x+1] = np.maximum(clean_mask[min_y:max_y+1, min_x:max_x+1], intensity)
+                    clean_image[min_y:max_y+1, min_x:max_x+1] = np.maximum(clean_image[min_y:max_y+1, min_x:max_x+1], color)
 
-        # Convertir a tensor [1, H, W]
-        clean_tensor = torch.from_numpy(clean_mask).unsqueeze(0)
+        # PyTorch espera [Canales, H, W] -> (3, 64, 64)
+        clean_tensor = torch.from_numpy(clean_image).permute(2, 0, 1)
         
-        # 2. Degradación más agresiva (y = k * x + n)
-        # a) Desenfoque Gaussiano variable
+        # 2. Degradación RGB
+        # a) Desenfoque Gaussiano (aplicado a cada canal igual usando groups=3)
         k_size = 9 
-        sigma = np.random.uniform(1.2, 2.5) # Cada imagen tiene un desenfoque distinto
+        sigma = np.random.uniform(1.2, 2.2)
         coords = torch.arange(k_size) - (k_size - 1) / 2.0
         g_1d = torch.exp(-coords.pow(2) / (2 * sigma**2))
         kernel = (g_1d.view(-1, 1) * g_1d.view(1, -1))
         kernel = (kernel / kernel.sum()).view(1, 1, k_size, k_size)
+        kernel_rgb = kernel.repeat(3, 1, 1, 1) # Repetir para los 3 canales RGB
 
-        blurred = F.conv2d(clean_tensor.unsqueeze(0), kernel, padding=k_size//2).squeeze(0)
+        blurred = F.conv2d(clean_tensor.unsqueeze(0), kernel_rgb, padding=k_size//2, groups=3).squeeze(0)
 
-        # b) Ruido Aditivo Gaussiano fuerte
-        noise_std = 0.1 # Aumentamos la desviación estándar del ruido
-        noise = torch.randn_like(blurred) * noise_std
+        # b) Ruido Aditivo Gaussiano fuerte en cada canal
+        noise_std = 0.08
+        observed_image = blurred + torch.randn_like(blurred) * noise_std
         
-        # c) Ruido "Sal y Pimienta" (Salt & Pepper)
-        observed_image = blurred + noise
-        sp_noise = torch.rand_like(observed_image)
-        observed_image[sp_noise < 0.01] = 0.0 # 1% de píxeles negros
-        observed_image[sp_noise > 0.99] = 1.0 # 1% de píxeles blancos
+        # c) Ruido "Sal y Pimienta" (Salt & Pepper) aplicado a la imagen completa
+        sp_noise = torch.rand(self.image_size, self.image_size)
+        observed_image[:, sp_noise < 0.01] = 0.0 
+        observed_image[:, sp_noise > 0.99] = 1.0
 
-        # Aseguramos que los valores sigan entre 0 y 1
         observed_image = torch.clamp(observed_image, 0, 1)
 
-        return observed_image, clean_tensor 
+        return observed_image, clean_tensor
+ 
  
 
 
@@ -106,75 +103,80 @@ class ShapeDataset(Dataset):
 
 # Crea la red neuronal. nn.Module es la clase base de PyTorch para todas las redes neuronales
 class BasicUNet(nn.Module):
-    def __init__(self): # Constructor donde se definen las capas de la red
-        super(BasicUNet, self).__init__() # Inicializa la clase padre (nn.Module)
+    def __init__(self): 
+        super(BasicUNet, self).__init__()
         
-        # --- ENCODER (Camino de bajada - Extrae características) ---
-        # Toma la imagen (1 canal en blanco y negro) y aplica filtros para buscar patrones
-        self.enc1 = nn.Sequential( # Agrupa varias operaciones que se ejecutarán en secuencia
-            # nn.Conv2d: 1 canal de entrada, 16 canales de salida (filtros), kernel de 3x3, padding de 1 para que la imagen no se encoja
-            nn.Conv2d(1, 16, kernel_size=3, padding=1), 
-            nn.ReLU(inplace=True), # Función de activación ReLU: Convierte los valores negativos a 0, dejando pasar los positivos
-            # Segunda convolución: 16 canales de entrada (los de antes), 16 de salida, misma configuración
-            nn.Conv2d(16, 16, kernel_size=3, padding=1), 
-            nn.ReLU(inplace=True) # Segunda activación ReLU
+        # Encoder Level 1
+        self.enc1 = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
         )
-        # Reduce la imagen a la mitad de tamaño (Downsampling / Pooling)
-        self.pool1 = nn.MaxPool2d(2) # Toma el valor máximo en bloques de 2x2, reduciendo resolución (ej: de 64x64 a 32x32)
+        self.pool1 = nn.MaxPool2d(2) 
         
-        # --- BOTTLENECK (Fondo de la U) ---
-        # Capa que procesa la imagen en su tamaño más pequeño y comprimido
-        self.bottleneck = nn.Sequential( 
-            # 16 canales de entrada (del encoder), 32 canales de salida (más filtros para más complejidad), kernel 3x3
-            nn.Conv2d(16, 32, kernel_size=3, padding=1), 
-            nn.ReLU(inplace=True), # Activación ReLU
-            # 32 canales de entrada y 32 de salida
-            nn.Conv2d(32, 32, kernel_size=3, padding=1), 
-            nn.ReLU(inplace=True) # Activación ReLU
+        # Encoder Level 2
+        self.enc2 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
         )
-        
-        # --- DECODER (Camino de subida - Reconstruye la imagen) ---
-        # Duplica el tamaño de la imagen usando una convolución transpuesta (o deconvolution)
-        # Recibe 32 canales, devuelve 16. Kernel de 2 y stride de 2 hacen que la resolución se duplique (ej: de 32x32 vuelve a 64x64)
-        self.up1 = nn.ConvTranspose2d(32, 16, kernel_size=2, stride=2) 
-        
-        # Al subir, concatenaremos con la información del encoder (Skip Connection)
-        # Por eso este bloque recibe 32 canales: 16 vienen de la capa up1 y 16 vienen directamente del encoder (enc1)
-        self.dec1 = nn.Sequential( # Capa que reconstruye la imagen fusionando contexto y detalles
-            # 32 canales combinados de entrada, 16 de salida
-            nn.Conv2d(32, 16, kernel_size=3, padding=1), 
-            nn.ReLU(inplace=True),  # Activación ReLU
-            # 16 canales de entrada, 16 de salida
-            nn.Conv2d(16, 16, kernel_size=3, padding=1), 
-            nn.ReLU(inplace=True) # Activación ReLU
+        self.pool2 = nn.MaxPool2d(2)
+
+        # --- BOTTLENECK ---
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
         )
         
-        # Capa final para sacar un solo canal (la imagen final reconstruida)
-        # De 16 canales pasa a 1 canal (escala de grises), usando un kernel de 1x1 (clasificación píxel por píxel)
-        self.out_conv = nn.Conv2d(16, 1, kernel_size=1) 
-        # Sigmoide aprieta los valores de salida para que estén estrictamente entre 0 y 1
+        # --- DECODER Level 2 ---
+        self.up2 = nn.ConvTranspose2d(256, 128, kernel_size=2, stride=2) 
+        self.dec2 = nn.Sequential(
+            nn.Conv2d(256, 128, kernel_size=3, padding=1), # 128 (up) + 128 (skip)
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+
+        # --- DECODER Level 1 ---
+        self.up1 = nn.ConvTranspose2d(128, 64, kernel_size=2, stride=2) 
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(128, 64, kernel_size=3, padding=1), # 64 (up) + 64 (skip)
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+        
+        # Capa final para sacar 3 canales (RGB)
+        self.out_conv = nn.Conv2d(64, 3, kernel_size=1) 
         self.sigmoid = nn.Sigmoid() 
 
-        # Nota: El valor 0 significa negro absoluto (fondo) y 1 significa blanco absoluto (figura)
-
-    def forward(self, x): # Paso hacia adelante (define exactamente cómo fluye la imagen por las capas)
+    def forward(self, x):
+        # Encoder
+        e1 = self.enc1(x)
+        p1 = self.pool1(e1)
         
-        # 1. Bajada (Encoder)
-        e1 = self.enc1(x) # Pasa la imagen original 'x' por el primer bloque encoder
-        p1 = self.pool1(e1) # Reduce a la mitad la resolución de 'e1'
+        e2 = self.enc2(p1)
+        p2 = self.pool2(e2)
         
-        # 2. Fondo (Bottleneck)
-        b = self.bottleneck(p1) # Pasa la imagen reducida por el bloque de fondo
+        # Bottleneck
+        b = self.bottleneck(p2)
         
-        # 3. Subida con Skip Connection (Decoder)
-        u1 = self.up1(b) # Duplica la resolución de lo que sale del fondo
-        # torch.cat concatena (une) la imagen subida 'u1' con la imagen 'e1' del encoder en la dimensión 1 (canales)
-        cat1 = torch.cat([u1, e1], dim=1) # <- ¡El secreto de la U-Net! Mezcla contexto global con detalles locales
-        d1 = self.dec1(cat1) # Pasa el resultado concatenado por el bloque decoder
+        # Decoder
+        u2 = self.up2(b)
+        cat2 = torch.cat([u2, e2], dim=1)
+        d2 = self.dec2(cat2)
         
-        # 4. Salida
-        out = self.out_conv(d1) # Reduce los canales de 16 a 1
-        return self.sigmoid(out) # Aplica Sigmoide y devuelve el resultado (la imagen limpia predicha)
+        u1 = self.up1(d2)
+        cat1 = torch.cat([u1, e1], dim=1)
+        d1 = self.dec1(cat1)
+        
+        # Salida
+        out = self.out_conv(d1)
+        return self.sigmoid(out)
 
 
 # =====================================================================
@@ -213,12 +215,13 @@ def visualize_dataset_sample(dataset): # Función que muestra un ejemplo del dat
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 5)) # Crea una figura con 1 fila y 2 columnas
 
-    axes[0].imshow(observed.squeeze().numpy(), cmap='gray') # Muestra la imagen degradada (con blur + ruido)
-    axes[0].set_title('Entrada Degradada (Blur + Ruido)') # Título de la primera columna
+    # Permutamos [C, H, W] -> [H, W, C] para que Matplotlib pueda dibujarlo en color
+    axes[0].imshow(observed.permute(1, 2, 0).numpy()) # Muestra la imagen degradada (RGB)
+    axes[0].set_title('Entrada Degradada (Color + Ruido)') # Título de la primera columna
     axes[0].axis('off') # Oculta los ejes
 
-    axes[1].imshow(clean.squeeze().numpy(), cmap='gray') # Muestra la imagen limpia original (ground truth)
-    axes[1].set_title('Ground Truth (Imagen Limpia)') # Título de la segunda columna
+    axes[1].imshow(clean.permute(1, 2, 0).numpy()) # Muestra la imagen limpia original (RGB)
+    axes[1].set_title('Ground Truth (Imagen Limpia RGB)') # Título de la segunda columna
     axes[1].axis('off') # Oculta los ejes
 
     plt.suptitle('Ejemplo del Dataset de Entrenamiento', fontsize=14, fontweight='bold', y=0.98) # Título general
@@ -230,11 +233,11 @@ def visualize_dataset_sample(dataset): # Función que muestra un ejemplo del dat
 
 
 def train_model(): # Función que controla todo el ciclo de aprendizaje de la red
-    print("Preparando datos...", flush=True) # Imprime un mensaje en consola
-    # Creamos un dataset de 400 imágenes (antes 200) para manejar la mayor dificultad
-    dataset = ShapeDataset(num_samples=400, image_size=64, min_shapes=3, max_shapes=6)
-    # DataLoader envuelve el dataset para entregar las imágenes a la red en "lotes" (batches) de 8 en 8
-    dataloader = DataLoader(dataset, batch_size=8, shuffle=True) 
+    print("Preparando datos (Aumentando para Color)...", flush=True) 
+    # Aumentamos a 800 imágenes para manejar la mayor complejidad cromática
+    dataset = ShapeDataset(num_samples=800, image_size=64, min_shapes=3, max_shapes=6)
+    # Lotes de 16 para mayor estabilidad en el aprendizaje de colores
+    dataloader = DataLoader(dataset, batch_size=16, shuffle=True) 
 
     # Mostrar un ejemplo del dataset antes de entrenar
     print("Mostrando ejemplo del dataset de entrenamiento...", flush=True)
@@ -245,10 +248,10 @@ def train_model(): # Función que controla todo el ciclo de aprendizaje de la re
     
     # criterion es la métrica con la que evaluaremos a la red (nuestra clase ArticleMSELoss definida arriba)
     criterion = ArticleMSELoss() 
-    # Optimizador Adam: es el "profesor" que cambia los pesos de la red basándose en el error (learning rate de 0.005) (lr es que tanto se equivoca al ajustar los pesos)
-    optimizer = optim.Adam(model.parameters(), lr=0.005) 
+    # Optimizador Adam con un learning rate más bajo para estabilidad en color
+    optimizer = optim.Adam(model.parameters(), lr=0.001) 
     
-    epochs = 5 # Aumentamos las épocas para que aprenda mejor los patrones difíciles
+    epochs = 15 # Aumentamos ligeramente las épocas
     print("Iniciando entrenamiento (esto puede tomar unos segundos)...", flush=True)
     
     total_batches = len(dataloader) # Cantidad total de lotes (ej: 200/8 = 25 lotes por época)
@@ -306,22 +309,22 @@ def visualize_results(model, dataset, num_images=5): # Función para probar y ve
             # Toma la imagen i del dataset. Ignora la máscara limpia (porque queremos ver la predicción de la red)
             image, _ = dataset[i] 
             
-            # Las redes esperan un batch (Lote, Canales, Alto, Ancho). image tiene forma (Canales, Alto, Ancho)
-            # unsqueeze(0) añade esa dimensión vacía al principio (pasa de [1,64,64] a [1,1,64,64])
+            # Las redes esperan un batch (Lote, Canales, Alto, Ancho). image tiene forma (3, 64, 64)
+            # unsqueeze(0) añade esa dimensión vacía al principio (pasa de [3,64,64] a [1,3,64,64])
             input_tensor = image.unsqueeze(0) 
             predicted_mask = model(input_tensor) # Pasa la imagen por el modelo entrenado y obtiene la reconstrucción
             
-            # squeeze() remueve las dimensiones de tamaño 1 (lote y canales). numpy() convierte el tensor en un arreglo normal para dibujar
-            img_np = image.squeeze().numpy() # Imagen de entrada degradada
-            pred_mask_np = predicted_mask.squeeze().numpy() # Imagen predicha por la U-Net
+            # Permutamos los canales para visualización RGB [H, W, C]
+            img_np = image.permute(1, 2, 0).numpy() # Imagen de entrada degradada
+            pred_mask_np = predicted_mask.squeeze(0).permute(1, 2, 0).numpy() # Imagen predicha RGB
             
-            axes[i][0].imshow(img_np, cmap='gray') # Dibuja la imagen degradada en la primera columna
-            axes[i][1].imshow(pred_mask_np, cmap='gray') # Dibuja la predicción de la U-Net en la segunda columna
+            axes[i][0].imshow(img_np) # Dibuja la imagen degradada en la primera columna
+            axes[i][1].imshow(pred_mask_np) # Dibuja la predicción de la U-Net en la segunda columna
             
             # Solo pone títulos en la primera fila para que la imagen final no quede sobrecargada de texto
             if i == 0:
-                axes[i][0].set_title('Entrada Degradada (Blur + Ruido)')
-                axes[i][1].set_title('Reconstrucción (U-Net)')
+                axes[i][0].set_title('Entrada Degradada (Color)')
+                axes[i][1].set_title('Reconstrucción RGB (U-Net)')
                 
             for ax in axes[i]:
                 ax.axis('off') # Oculta los ejes numéricos (los bordes) de cada gráfico
